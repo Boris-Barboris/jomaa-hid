@@ -159,8 +159,9 @@ static int jomaa_event(struct hid_device *hdev, struct hid_field *field,
 		struct hid_usage *usage, __s32 value)
 {
 	struct jomaa_sc *msc = hid_get_drvdata(hdev);
-	// skip inverted Y:
-	if (field->report->id == TRACKPAD_REPORT_ID && field->usage->hid == HID_GD_Y)
+	// skip touch events:
+	if (field->report->id == TRACKPAD_REPORT_ID &&
+			(field->usage->hid == HID_GD_Y) || (field->usage->hid == HID_GD_X))
 		return 1;
 	return 0;
 }
