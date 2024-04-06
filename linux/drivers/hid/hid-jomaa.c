@@ -69,6 +69,7 @@
 #define TRACKPAD_MIN_Y 0
 #define TRACKPAD_MAX_Y 1232
 #define TOUCH_COUNT 4
+#define TRANSDUCER_COUNT 5
 
 /**
  * struct jomaa_sc - LTP-03-specific data.
@@ -84,20 +85,19 @@ struct jomaa_sc {
 static void jomaa_emit_buttons(struct jomaa_sc *msc, int state)
 {
 	input_report_key(msc->input, BTN_LEFT, state & 1);
-	input_report_key(msc->input, BTN_RIGHT, state & 2);
 }
 
 static bool jomaa_emit_touch(struct jomaa_sc *msc, int raw_id,
-		u8 *tdata, int scantime)
+		u8 *tdata)
 {
 	struct input_dev *input = msc->input;
 	short id, x, y, state;
 
 	id = (tdata[0] & 0xfc) >> 2;	// Transducer indexes start from 1
-	if (id < 1 || id >= TOUCH_COUNT)
+	if (id < 1 || id > TRANSDUCER_COUNT)
 		return false;
 	x = (tdata[1] & 0xff) | ((short)(tdata[2] & 0x0f) << 8);
-	y = ((tdata[2] & 0xf0) >> 4) | ((tdata[3] & 0xff) << 4);
+	y = ((tdata[2] & 0xf0) >> 4) | ((short)(tdata[3] & 0xff) << 4);
 	state = tdata[0] & 0x2;
 
 	input_mt_slot(input, input_mt_get_slot_by_key(input, id));
@@ -138,9 +138,9 @@ static int jomaa_raw_event(struct hid_device *hdev,
 		if (size < 20) {
 			return 0;
 		}
-		scantime = ((int)data[2] << 8) | data[1];
+		scantime = ((u16)data[2] << 8) | data[1];
 		for (ii = 0; ii < TOUCH_COUNT; ii++)
-			use_count |= jomaa_emit_touch(msc, ii, data + 4 + ii * 4, scantime);
+			use_count |= jomaa_emit_touch(msc, ii, data + 4 + ii * 4);
 		clicks = data[3] & 0x3;
 		break;
 	default:
@@ -150,8 +150,19 @@ static int jomaa_raw_event(struct hid_device *hdev,
 	input_mt_sync_frame(input);
 	jomaa_emit_buttons(msc, clicks);
 	// input_mt_report_pointer_emulation(input, true);
+	input_event(input, EV_MSC, MSC_TIMESTAMP, (u32)scantime * 100);
 	input_sync(input);
 	return 1;
+}
+
+static int jomaa_event(struct hid_device *hdev, struct hid_field *field,
+		struct hid_usage *usage, __s32 value)
+{
+	struct jomaa_sc *msc = hid_get_drvdata(hdev);
+	// skip inverted Y:
+	if (field->report->id == TRACKPAD_REPORT_ID && field->usage->hid == HID_GD_Y)
+		return 1;
+	return 0;
 }
 
 static int jomaa_setup_input(struct input_dev *input, struct hid_device *hdev)
@@ -160,33 +171,36 @@ static int jomaa_setup_input(struct input_dev *input, struct hid_device *hdev)
 	int mt_flags = 0;
 
 	__set_bit(EV_KEY, input->evbit);
-	__clear_bit(EV_MSC, input->evbit);
 	__clear_bit(BTN_0, input->keybit);
 	__clear_bit(BTN_MIDDLE, input->keybit);
 	__clear_bit(BTN_RIGHT, input->keybit);
 	__set_bit(BTN_MOUSE, input->keybit);
-	__set_bit(BTN_RIGHT, input->keybit);
-	__set_bit(BTN_TOOL_FINGER, input->keybit);
-	__set_bit(BTN_TOOL_DOUBLETAP, input->keybit);
-	__set_bit(BTN_TOOL_TRIPLETAP, input->keybit);
-	__set_bit(BTN_TOOL_QUADTAP, input->keybit);
 	__set_bit(BTN_TOUCH, input->keybit);
-	__set_bit(INPUT_PROP_POINTER, input->propbit);
 	__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
 	mt_flags = INPUT_MT_POINTER | INPUT_MT_DROP_UNUSED |
 			INPUT_MT_TRACK;
 	__set_bit(EV_ABS, input->evbit);
 
-	error = input_mt_init_slots(input, TOUCH_COUNT, mt_flags);
+	error = input_mt_init_slots(input, TRANSDUCER_COUNT, mt_flags);
 	if (error)
 		return error;
 
+	input_set_abs_params(input, ABS_X,
+					TRACKPAD_MIN_X, TRACKPAD_MAX_X, 0, 0);
+	input_set_abs_params(input, ABS_Y,
+					TRACKPAD_MIN_Y, TRACKPAD_MAX_Y, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_X,
 					TRACKPAD_MIN_X, TRACKPAD_MAX_X, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y,
 					TRACKPAD_MIN_Y, TRACKPAD_MAX_Y, 0, 0);
 
-	input_set_events_per_packet(input, 20);
+	input_abs_set_res(input, ABS_X, TRACKPAD_MAX_X / (float)120);
+	input_abs_set_res(input, ABS_Y, TRACKPAD_MAX_Y / (float)90);
+
+	input_abs_set_res(input, ABS_MT_POSITION_X, TRACKPAD_MAX_X / (float)120);
+	input_abs_set_res(input, ABS_MT_POSITION_Y, TRACKPAD_MAX_Y / (float)90);
+
+	input_set_events_per_packet(input, 60);
 
 	/*
 	 * hid-input may mark device as using autorepeat, but neither
@@ -350,6 +364,7 @@ static struct hid_driver jomaa_driver = {
 	.probe = jomaa_probe,
 	.remove = jomaa_remove,
 	.raw_event = jomaa_raw_event,
+	.event = jomaa_event,
 	.input_mapping = jomaa_input_mapping,
 	.input_configured = jomaa_input_configured,
 };
